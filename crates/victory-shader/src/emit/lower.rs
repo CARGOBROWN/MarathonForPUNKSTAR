@@ -6169,7 +6169,12 @@ impl<'a> Lower<'a> {
         };
         if let Some(stride) = picked {
             let zero = self.s.m.i32(0);
-            let is_buffer = self.s.m.cmp(self.cur, pred::NE, stride, zero);
+            let mut is_buffer = self.s.m.cmp(self.cur, pred::NE, stride, zero);
+            if super::pick_bound() {
+                let inside = self.picked_inside(site, src, 0, addr, stride, 0)?;
+                let no = self.s.m.bool(false);
+                is_buffer = self.s.m.select(self.cur, is_buffer, inside, no);
+            }
             let at = self.begin_guarded(Some(is_buffer));
             let h = self.handle(site, src, false, (11, 0))?;
             let mut raw = Vec::new();
@@ -7473,6 +7478,52 @@ impl<'a> Lower<'a> {
     /// picks it from the view heap at an index it computes (root type
     /// `ResourceHeap`): read from the host's table by heap slot in the
     /// current block.
+    /// Whether a raw access of `width` bytes from `byte` on (0: its first
+    /// byte) through the buffer view `src` names lies inside that view, if the
+    /// program picks the view from the heap by an index it computes
+    /// ([`super::pick_bound`]); `stride` is the view's bytes per element from
+    /// the host's table (1 for a raw view), `u` the unordered bit of the
+    /// access's handle.
+    fn picked_inside(&mut self, site: Site, src: &Source, u: u32, byte: V, stride: V, width: u32) -> Result<V, Why> {
+        // Asked of a buffer view only: the slot may hold a texture, and its
+        // size asked as a buffer's removed the device. (False elsewhere.)
+        let zero = self.s.m.i32(0);
+        let buffer = self.s.m.cmp(self.cur, pred::NE, stride, zero);
+        let at = self.begin_guarded(Some(buffer));
+        let inside = self.picked_inside_of_buffer(site, src, u, byte, stride, width)?;
+        let one = self.s.m.i32(1);
+        let flag = self.s.m.select(self.cur, inside, one, zero);
+        let flag = self.end_guarded(at, &[(flag, zero)])[0];
+        Ok(self.s.m.cmp(self.cur, pred::NE, flag, zero))
+    }
+
+    /// [`Self::picked_inside`] where the slot is known to hold a buffer view.
+    fn picked_inside_of_buffer(&mut self, site: Site, src: &Source, u: u32, byte: V, stride: V, width: u32) -> Result<V, Why> {
+        let h = self.handle(site, src, false, (11 | u, 0))?;
+        let c = self.cur;
+        let i32t = self.s.t.i32;
+        let dims = self.s.m.named_struct("dx.types.Dimensions", vec![i32t; 4]);
+        let mip = self.s.m.undef(i32t);
+        let d = self.s.op(c, "getDimensions", Attr::ReadOnly, dims, 72, &[h, mip]);
+        let elements = self.s.m.extract(c, d, 0);
+        let bytes = self.s.m.bin(c, Bin::Mul, elements, stride);
+        let over = self.mul_hi(elements, stride, false);
+        let zero = self.s.m.i32(0);
+        let all = self.s.m.i32(u32::MAX);
+        let over = self.s.m.cmp(c, pred::NE, over, zero);
+        let bytes = self.s.m.select(c, over, all, bytes);
+        let inside = self.s.m.cmp(c, pred::IULT, byte, bytes);
+        if width <= 1 {
+            return Ok(inside);
+        }
+        // No sum that could wrap: what is left from `byte` on.
+        let left = self.s.m.bin(c, Bin::Sub, bytes, byte);
+        let need = self.s.m.i32(width);
+        let fits = self.s.m.cmp(c, pred::IUGE, left, need);
+        let no = self.s.m.bool(false);
+        Ok(self.s.m.select(c, inside, fits, no))
+    }
+
     fn slot_stride(&mut self, src: &Source) -> Result<Option<V>, Why> {
         let word = self.slot_word(src)?;
         Ok(word.map(|word| {
@@ -11644,6 +11695,8 @@ impl<'a> Lower<'a> {
         // element's byte. (Also tells the host this shader reads such
         // buffers.)
         let mut index = index;
+        // Picked from the heap and read as raw bytes ([`super::pick_bound`]).
+        let picked_stride = if super::pick_bound() && !typed && used.is_none() { self.slot_stride(src)? } else { None };
         if let Some(stride) = self.slot_stride(src)?
             && let Some(element) = index
             && !typed
@@ -11712,6 +11765,33 @@ impl<'a> Lower<'a> {
             u |= 0x4000;
         }
         let iu = self.s.m.undef(self.s.t.i32);
+        // A picked view accessed as raw bytes: only inside the view the slot
+        // holds. Out of it a read takes the view's first bytes, and a store or
+        // an atomic does nothing; a read may end up to 12 bytes past (four
+        // dwords of a 12-byte element), what changes memory must lie inside.
+        let guarded = match picked_stride {
+            Some(stride) if index.is_none() => {
+                let width = match narrow {
+                    Some((bits, _)) if store => bits / 8,
+                    _ if store || atomic.is_some() => 4 * u32::from(count),
+                    _ => 0,
+                };
+                let inside = self.picked_inside(site, src, u, off, stride, width)?;
+                let c = self.cur;
+                let zero = self.s.m.i32(0);
+                off = self.s.m.select(c, inside, off, zero);
+                Some(match guard {
+                    Some(g) => {
+                        let no = self.s.m.bool(false);
+                        self.s.m.select(c, g, inside, no)
+                    }
+                    None => inside,
+                })
+            }
+            _ => guard,
+        };
+        // (The bound may have opened blocks: what follows goes into the last.)
+        let c = self.cur;
         if let Some((bits, signed)) = narrow {
             // Below a dword: raw buffers are read and written in dwords on
             // 4 bytes, so the dword that holds the value is read and
@@ -11783,7 +11863,7 @@ impl<'a> Lower<'a> {
             let set_next = self.s.m.bin(c, Bin::LShr, v, k8);
             let (and, or) = (self.s.m.i32(1), self.s.m.i32(2));
             let i32t = self.s.t.i32;
-            let at = self.begin_guarded(guard);
+            let at = self.begin_guarded(guarded);
             for (op, x) in [(and, keep), (or, set)] {
                 let args = [h, op, aligned, iu, iu, x];
                 self.s
@@ -11828,7 +11908,7 @@ impl<'a> Lower<'a> {
                 Some(v) if returns => self.i32_of(v)?,
                 _ => self.s.m.i32(0),
             };
-            let at = self.begin_guarded(guard);
+            let at = self.begin_guarded(guarded);
             let i32t = self.s.t.i32;
             let r = if op == u32::MAX {
                 // cmpswap: data is (new, compare).
@@ -11935,7 +12015,7 @@ impl<'a> Lower<'a> {
             if !typed {
                 args.push(self.s.m.i32(4));
             }
-            let at = self.begin_guarded(guard);
+            let at = self.begin_guarded(guarded);
             let void = self.s.t.void;
             self.s.op(self.cur, name, Attr::NoUnwind, void, op, &args);
             self.end_guarded(at, &[]);

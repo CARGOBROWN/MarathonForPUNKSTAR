@@ -2562,6 +2562,30 @@ pub(crate) fn install() {
         AddVectoredExceptionHandler, EXCEPTION_CONTINUE_EXECUTION, EXCEPTION_CONTINUE_SEARCH,
         EXCEPTION_POINTERS,
     };
+    /// Makes the page of `at`, whose guard our copy just spent, a guard page
+    /// again, with the page's other protection (from VIctory 79c9b93 by
+    /// TG0000, as in iLucasRT/VInAMD 6c7aac5).
+    fn guard_again(at: usize) {
+        use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_GUARD, VirtualProtect, VirtualQuery};
+        // SAFETY: plain data filled in by the query.
+        let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: a valid out pointer of the right size.
+        let n = unsafe { VirtualQuery(at as *const _, &mut info, size_of_val(&info)) };
+        if n == 0 || info.State != MEM_COMMIT {
+            return;
+        }
+        let protect = |protection: u32| {
+            let mut old = 0;
+            // SAFETY: only the page's protection changes; fails if it is gone.
+            (unsafe { VirtualProtect(at as *const _, 1, protection, &mut old) } != 0).then_some(old)
+        };
+        if let Some(old) = protect(info.Protect | PAGE_GUARD)
+            && old & !PAGE_GUARD != info.Protect & !PAGE_GUARD
+        {
+            protect(old);
+        }
+    }
+
     unsafe extern "system" fn on_write(info: *mut EXCEPTION_POINTERS) -> i32 {
         let _fault = crate::timeline::span("a fault looked at");
         // SAFETY: the system passes the exception being dispatched.
@@ -2578,6 +2602,13 @@ pub(crate) fn install() {
             unsafe { (*context).Rip = exit as u64 };
             EXCEPTION_CONTINUE_EXECUTION
         };
+        // A guard page of the title's our copy reached: the kernel's copy
+        // leaves it a guard page, so ours puts the guard back before it
+        // fails (else the title's next touch is not told to it).
+        const GUARD_PAGE: NTSTATUS = 0x8000_0001_u32 as NTSTATUS;
+        if ours.is_some() && r.ExceptionCode == GUARD_PAGE && r.NumberParameters >= 2 {
+            guard_again(r.ExceptionInformation[1]);
+        }
         if r.ExceptionCode != EXCEPTION_ACCESS_VIOLATION as NTSTATUS
             || r.NumberParameters < 2
             || r.ExceptionInformation[0] != WRITE
