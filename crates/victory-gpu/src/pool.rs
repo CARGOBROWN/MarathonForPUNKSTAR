@@ -39,10 +39,14 @@ const STAGING_KEPT: usize = 8;
 static SPARES: AtomicUsize = AtomicUsize::new(SPARE);
 
 /// Sets how many empty blocks stay, by the card's memory (budget and use):
-/// [`SPARE_KEPT`] below 85 % ([`crate::host::keep_freed`]), else [`SPARE`].
-/// Asked once a second.
+/// [`SPARE_KEPT`] below 85 % ([`crate::host::keep_freed`]), else [`SPARE`];
+/// and [`SPARE`] while the PC has little left to commit
+/// ([`crate::resource::commit_short`]): each block of the card's memory is
+/// commit of the process too (run YP3 held 9.5 GB of them, and lost the
+/// device with 1.2 GB left to commit). Asked once a second.
 pub(crate) fn room(memory: Option<[u64; 4]>) {
-    SPARES.store(spares(memory, crate::host::keep_freed()), Ordering::Relaxed);
+    let keep = crate::host::keep_freed() && crate::resource::commit_short().is_none();
+    SPARES.store(spares(memory, keep), Ordering::Relaxed);
 }
 
 fn spares(memory: Option<[u64; 4]>, keep: bool) -> usize {
