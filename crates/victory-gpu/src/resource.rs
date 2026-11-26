@@ -2012,6 +2012,29 @@ pub(crate) fn card_accounting(room: bool, due: [u64; 5], never: Vec<(u64, u64)>,
 /// Every caller uses it at once, within the title's call.
 /// Called before a submission starts, by the thread that submits.
 /// `VICTORY_TEXTURE_SWEEP=0` lets nothing go.
+/// Bytes the PC lacks to have `VICTORY_TEXTURE_COMMIT_MB` (6144) left to
+/// commit, twice over (what goes from the card's overflow is not all
+/// commit); `None` while it has them.
+#[cfg(windows)]
+fn commit_short() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    static WANT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let want = *WANT.get_or_init(|| {
+        std::env::var("VICTORY_TEXTURE_COMMIT_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(6144) << 20
+    });
+    if want == 0 {
+        return None;
+    }
+    // SAFETY: plain data the call fills in.
+    let mut m: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    m.dwLength = size_of::<MEMORYSTATUSEX>() as u32;
+    // SAFETY: a sized structure.
+    if unsafe { GlobalMemoryStatusEx(&mut m) } == 0 || m.ullAvailPageFile >= want {
+        return None;
+    }
+    Some((want - m.ullAvailPageFile) * 2)
+}
+
 #[cfg(windows)]
 pub(crate) fn let_go_idle() {
     use std::sync::atomic::Ordering::Relaxed;
@@ -2043,6 +2066,16 @@ pub(crate) fn let_go_idle() {
             crate::host::vram_keep(budget, used)
         }
         _ => (crate::host::vram_idle_ms(memory), u64::MAX),
+    };
+    // What the card holds beyond its own memory lies in the PC's, and the
+    // card's share alone said keep: 130,000 host copies kept, 16 GB of the
+    // PC's memory under the card's and 0.4 GB left to commit after twelve
+    // minutes of play (run YP2), when models stayed invisible. With little
+    // left to commit, what is idle goes until there is
+    // (`VICTORY_TEXTURE_COMMIT_MB`, 6144; 0: the card's share alone).
+    let (idle_ms, most) = match commit_short() {
+        Some(short) => (idle_ms.min(5_000), if most == u64::MAX { short } else { most.max(short) }),
+        None => (idle_ms, most),
     };
     // For the trail (`crate::host::trail`): how many went, their bytes,
     // and the first one.
