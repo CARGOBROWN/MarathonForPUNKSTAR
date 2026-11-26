@@ -8,7 +8,7 @@ RX 7900 XTX**: speed first, without crashes, then the picture.
 **This repository contains no game files, code or assets.** You need your own legally obtained copy
 of the game. It is not affiliated with or endorsed by the game's developer or publisher.
 
-## Where it stands (2026-11-25)
+## Where it stands (2026-11-26)
 
 Tested on one machine only: Windows 11, AMD Ryzen 7 5800X3D, 64 GB RAM, Radeon RX 7900 XTX 24 GB,
 diagnostics build, second launch of the build.
@@ -17,9 +17,9 @@ diagnostics build, second launch of the build.
 |---|---|
 | Menus, videos, loading screens | 30 fps |
 | Prison cell, standing still | 65-73 ms a frame (14-15 fps) |
-| Played up to the boat mission and the open world | median 82 ms a frame (12 fps); one frame in ten over 225 ms |
-| Longest session played | 20 minutes, no device loss |
-| Memory | about 47 GB of private memory after 12 minutes: **64 GB of RAM needed** |
+| Open world, played | median 85-90 ms a frame (11-12 fps); one frame in ten over 140 ms |
+| Longest session played | 32 minutes, no device loss |
+| Memory | about 40-42 GB of private memory, steady after 10 minutes: **64 GB of RAM needed** |
 
 The window's caption tells where a frame's time goes: peak frame, CPU and copies, copying back,
 the card's busy share, video memory, RAM, free commit, and pipelines and textures pending
@@ -27,9 +27,10 @@ the card's busy share, video memory, RAM, free commit, and pipelines and texture
 
 What is known to be wrong:
 
-- **Memory.** Private memory grows to about 47 GB and free commit falls below 1 GB; with the card
-  close to full, models and people can stay invisible or at their lowest detail (a boat seen
-  transparent). Being looked at first.
+- **Memory.** Free commit can still fall to about 2 GB with a page file sized by Windows. When
+  it is short, textures are let go too soon and made again: trees can flicker. Being fixed.
+- **Streaming.** The title asks for files in bursts of thousands; requests wait up to a second or
+  more, and models (people, trees) can stay at their lowest detail for a while. Being looked at.
 - The open world has dips of 150-450 ms a frame while it streams.
 - Hair can be drawn over faces in some shots.
 - Rooms with little direct light are dark unless the title's ray tracing is turned on (`-RayTracing`).
@@ -46,6 +47,10 @@ On top of VIctory-7900XTX (what that fork does, and why, is in [docs/findings.md
   run that moved through the world lost the device within 4 to 10 minutes; with it none did.
 - **A copy that meets one of the title's guard pages puts the guard back** before it fails, as the
   kernel's copy leaves it.
+- **Memory under pressure:** host copies of textures, and empty blocks of the card's memory, go
+  when the PC has little left to commit (`VICTORY_TEXTURE_COMMIT_MB`).
+- **Pull requests of VIctory-7900XTX taken early:** #24 (UwUCammie), #68 (zocram4cc), #77
+  (Adika713; `scripts\play.ps1` sets `VICTORY_WINDOW_BUDGET_MB=2048`) and #87.
 - **The caption's performance figures**, and stopwatches of the texture side of the pass over the
   view heap (diagnostics).
 
