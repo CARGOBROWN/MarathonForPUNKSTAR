@@ -1989,7 +1989,7 @@ pub(crate) fn card_accounting(room: bool, due: [u64; 5], never: Vec<(u64, u64)>,
     }
 }
 
-/// Bytes the PC lacks to have `VICTORY_TEXTURE_COMMIT_MB` (6144) left to
+/// Bytes the PC lacks to have `VICTORY_TEXTURE_COMMIT_MB` (2048) left to
 /// commit, twice over (what goes from the card's overflow is not all
 /// commit); `None` while it has them.
 #[cfg(windows)]
@@ -1997,7 +1997,7 @@ pub(crate) fn commit_short() -> Option<u64> {
     use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     static WANT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     let want = *WANT.get_or_init(|| {
-        std::env::var("VICTORY_TEXTURE_COMMIT_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(6144) << 20
+        std::env::var("VICTORY_TEXTURE_COMMIT_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(2048) << 20
     });
     if want == 0 {
         return None;
@@ -2072,9 +2072,11 @@ pub(crate) fn let_go_idle() {
     // PC's memory under the card's and 0.4 GB left to commit after twelve
     // minutes of play (run YP2), when models stayed invisible. With little
     // left to commit, what is idle goes until there is
-    // (`VICTORY_TEXTURE_COMMIT_MB`, 6144; 0: the card's share alone).
+    // (`VICTORY_TEXTURE_COMMIT_MB`, 2048; 0: the card's share alone),
+    // after a minute unused: with 6144 MB and 5 s (run YP4) the title asked
+    // for 171,035 of them again, and trees flickered.
     let (idle_ms, most) = match commit_short() {
-        Some(short) => (idle_ms.min(5_000), if most == u64::MAX { short } else { most.max(short) }),
+        Some(short) => (idle_ms.min(60_000), if most == u64::MAX { short } else { most.max(short) }),
         None => (idle_ms, most),
     };
     // For the trail (`crate::host::trail`): how many went, their bytes,
