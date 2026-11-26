@@ -706,14 +706,16 @@ fn card_clock_watch(clock: &'static CardClock) {
 
 /// For the frame-rate line: [`CARD_CLOCK_US`] per frame, `ms` being the
 /// frame's time.
-fn card_clock_line(frames: f64, ms: f64) {
+fn card_clock_line(frames: f64, ms: f64) -> f64 {
     let [idle, behind, stood] = [0, 1, 2].map(|i| CARD_CLOCK_US[i].swap(0, Ordering::Relaxed) as f64 / 1000.0 / frames);
+    let busy = if ms > 0.0 { (100.0 * (1.0 - idle / ms)).clamp(0.0, 100.0) } else { 0.0 };
     tracing::info!(
         "the card's clock per frame: nothing of ours queued {idle:.1} ms (the card about {:.0}% busy by this count), \
          {behind:.1} ms of that while the submitting thread was working (the card idle behind us), the rest while the title \
          had not submitted; the submitting thread stood waiting for the card {stood:.1} ms",
-        if ms > 0.0 { (100.0 * (1.0 - idle / ms)).clamp(0.0, 100.0) } else { 0.0 }
+        busy
     );
+    busy
 }
 
 /// Of the preparing: title memory copies (microseconds, bytes) and texture
@@ -8494,8 +8496,93 @@ struct Presenter {
 
 /// The frame rate, shown in the window's caption every second and logged
 /// every few seconds.
+/// The PC's memory in bytes: physical memory free, and what is left to
+/// commit.
+fn system_memory() -> (u64, u64) {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    // SAFETY: plain data the call fills in.
+    let mut m: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    m.dwLength = size_of::<MEMORYSTATUSEX>() as u32;
+    // SAFETY: a sized structure.
+    unsafe { GlobalMemoryStatusEx(&mut m) };
+    (m.ullAvailPhys, m.ullAvailPageFile)
+}
+
+/// The process's private bytes, for the caption.
+fn process_private_bytes() -> u64 {
+    use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let mut c = PROCESS_MEMORY_COUNTERS { cb: size_of::<PROCESS_MEMORY_COUNTERS>() as u32, ..Default::default() };
+    // SAFETY: our own process and a sized structure.
+    unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
+    c.PagefileUsage as u64
+}
+
+/// Whether the window's caption also tells where a frame's time goes and
+/// the memory in use (`VICTORY_TITLE_STATS=0`: the frame rate only). From
+/// iLucasRT/VInAMD.
+fn title_stats() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_TITLE_STATS").is_none_or(|v| v != "0"))
+}
+
+/// What the caption tells beside the frame rate, over the last second. The
+/// times are milliseconds of a frame; they overlap and do not add up.
+struct Stats {
+    /// The longest frame.
+    peak_ms: f64,
+    /// Preparing submissions on the CPU, and copying title memory in it.
+    cpu_ms: f64,
+    copies_ms: f64,
+    /// Bringing what shaders wrote back to title memory.
+    readback_ms: f64,
+    /// The card had work of ours queued (an estimate by our own clock):
+    /// milliseconds, and percent of the time; and our threads waited for it.
+    gpu_ms: f64,
+    gpu_busy: f64,
+    gpu_wait_ms: f64,
+    /// Bytes of the card's memory in use by this process, and what the
+    /// system lets it use.
+    vram: Option<(u64, u64)>,
+    /// Bytes: the process's private memory; physical memory free in the PC;
+    /// what the system can still commit.
+    ram: u64,
+    ram_free: u64,
+    commit_free: u64,
+    /// Pipelines queued and not made yet, texture slots due for an upload.
+    pipelines: u64,
+    textures: u64,
+}
+
+impl std::fmt::Display for Stats {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let gb = |bytes: u64| bytes as f64 / f64::from(1 << 30);
+        write!(
+            f,
+            " | peak {:.0} ms | CPU {:.0} ms (copies {:.0}) | readback {:.0} ms | GPU {:.0} ms ({:.0}% busy), wait {:.0}",
+            self.peak_ms, self.cpu_ms, self.copies_ms, self.readback_ms, self.gpu_ms, self.gpu_busy, self.gpu_wait_ms
+        )?;
+        if let Some((used, budget)) = self.vram {
+            write!(f, " | VRAM {:.1}/{:.1} GB", gb(used), gb(budget))?;
+        }
+        write!(
+            f,
+            " | RAM {:.1} GB, {:.1} free, commit {:.1} free | pending {} pipelines, {} textures",
+            gb(self.ram),
+            gb(self.ram_free),
+            gb(self.commit_free),
+            self.pipelines,
+            self.textures
+        )
+    }
+}
+
 struct Meter {
     since: std::time::Instant,
+    /// When the last frame was presented, and the longest one since the
+    /// last caption.
+    last: std::time::Instant,
+    longest: std::time::Duration,
     frames: u32,
     #[cfg(feature = "diagnostics")]
     copy_stats_frames: u64,
@@ -8510,6 +8597,8 @@ impl Meter {
         let now = std::time::Instant::now();
         Meter {
             since: now,
+            last: now,
+            longest: std::time::Duration::ZERO,
             frames: 0,
             #[cfg(feature = "diagnostics")]
             copy_stats_frames: 0,
@@ -8531,6 +8620,8 @@ impl Meter {
         tracing::debug!(target: "victory_gpu::frame", token = crate::frame::current(), "present");
         #[cfg(feature = "diagnostics")]
         crate::copystat::presented();
+        self.longest = self.longest.max(self.last.elapsed());
+        self.last = std::time::Instant::now();
         self.frames += 1;
         #[cfg(feature = "diagnostics")]
         {
@@ -8541,6 +8632,7 @@ impl Meter {
             return;
         }
         let drawn = crate::draw::drawn();
+        let longest = std::mem::take(&mut self.longest);
         let frames = f64::from(self.frames);
         let fps = frames / elapsed.as_secs_f64();
         let ms = elapsed.as_secs_f64() * 1000.0 / frames;
@@ -8570,7 +8662,7 @@ impl Meter {
         crate::descriptor::sync_line(frames);
         late_line(frames);
         crate::queue::behind_line(frames);
-        card_clock_line(frames, ms);
+        let gpu_busy = card_clock_line(frames, ms);
         #[cfg(feature = "diagnostics")]
         spans::line(frames);
         crate::shadow::back_line(frames);
@@ -8779,7 +8871,26 @@ impl Meter {
             self.caption = Some(buffer);
         }
         let Some(caption) = &self.caption else { return };
-        let text = format!(" | VIctory {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame");
+        let mut text = format!(" | VIctory {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame");
+        if title_stats() {
+            let (ram_free, commit_free) = system_memory();
+            text += &Stats {
+                peak_ms: longest.as_secs_f64() * 1e3,
+                cpu_ms: cpu,
+                copies_ms: copy_ms,
+                readback_ms: back_ms,
+                gpu_ms: ms * gpu_busy / 100.0,
+                gpu_busy,
+                gpu_wait_ms: gpu,
+                vram: host().and_then(|h| h.video_memory()).map(|[budget, used, ..]| (used, budget)),
+                ram: process_private_bytes(),
+                ram_free,
+                commit_free,
+                pipelines: crate::pipeline::making(),
+                textures: crate::draw::HEAP_TEXTURES_QUEUE[1].load(Ordering::Relaxed),
+            }
+            .to_string();
+        }
         let mut text: Vec<u16> = caption.iter().copied().chain(text.encode_utf16()).collect();
         text.push(0);
         // Setting the text waits for the window's thread (a title thread,
