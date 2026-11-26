@@ -17,7 +17,7 @@ diagnostics build, second launch of the build.
 |---|---|
 | Menus, videos, loading screens | 30 fps |
 | Prison cell, standing still | 65-73 ms a frame (14-15 fps) |
-| Open world, played | median 85-90 ms a frame (11-12 fps); one frame in ten over 140 ms |
+| Open world, played | median 89 ms a frame (11 fps); one frame in ten over 135 ms; stutters remain |
 | Longest session played | 32 minutes, no device loss |
 | Memory | about 40-42 GB of private memory, steady after 10 minutes: **64 GB of RAM needed** |
 
@@ -50,7 +50,11 @@ On top of VIctory-7900XTX (what that fork does, and why, is in [docs/findings.md
 - **Memory under pressure:** host copies of textures, and empty blocks of the card's memory, go
   when the PC has little left to commit (`VICTORY_TEXTURE_COMMIT_MB`).
 - **Pull requests of VIctory-7900XTX taken early:** #24 (UwUCammie), #68 (zocram4cc), #77
-  (Adika713; `scripts\play.ps1` sets `VICTORY_WINDOW_BUDGET_MB=2048`) and #87.
+  (Adika713; `scripts\play.ps1` sets `VICTORY_WINDOW_BUDGET_MB=2048`), #87, #92 (TheHoracio:
+  windows of title memory in the card's memory), #98 (Joly0: streaming stores for big copies),
+  #105 and #108 (SousaTrashBin: card steps without the waits behind placed copies; a loop limit
+  for the ray march `39f0e9aeb156a61c`, `VICTORY_SHADER_LOOP_LIMITS`). Upstream's main is merged
+  up to 85d5641.
 - **The caption's performance figures**, and stopwatches of the texture side of the pass over the
   view heap (diagnostics).
 
