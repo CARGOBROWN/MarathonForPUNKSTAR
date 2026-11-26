@@ -1,4 +1,4 @@
-# VInAMD
+# MarathonForPUNKSTAR
 
 A fork of [VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX), itself a fork of
 [VIctory](https://github.com/Marvisak/VIctory): a compatibility layer that runs an Xbox Series title
