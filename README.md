@@ -27,8 +27,11 @@ the card's busy share, video memory, RAM, free commit, and pipelines and texture
 
 What is known to be wrong:
 
-- **Memory.** Free commit can still fall to about 2 GB with a page file sized by Windows. When
-  it is short, textures are let go too soon and made again: trees can flicker. Being fixed.
+- **Memory.** Free commit can still fall to about 2 GB with a page file sized by Windows.
+- **Trees flicker** in the open world, appearing and disappearing. Not memory alone: it stays
+  with textures let go only below 2 GB of free commit, after a minute unused. Being looked at.
+- **Stutters.** About one second in five has a frame over 150 ms; 10 fps can feel like 3-4.
+  Being looked at.
 - **Streaming.** The title asks for files in bursts of thousands; requests wait up to a second or
   more, and models (people, trees) can stay at their lowest detail for a while. Being looked at.
 - The open world has dips of 150-450 ms a frame while it streams.
@@ -53,8 +56,8 @@ On top of VIctory-7900XTX (what that fork does, and why, is in [docs/findings.md
   (Adika713; `scripts\play.ps1` sets `VICTORY_WINDOW_BUDGET_MB=2048`), #87, #92 (TheHoracio:
   windows of title memory in the card's memory), #98 (Joly0: streaming stores for big copies),
   #105 and #108 (SousaTrashBin: card steps without the waits behind placed copies; a loop limit
-  for the ray march `39f0e9aeb156a61c`, `VICTORY_SHADER_LOOP_LIMITS`). Upstream's main is merged
-  up to 85d5641.
+  for the ray march `39f0e9aeb156a61c`, `VICTORY_SHADER_LOOP_LIMITS`) and #96 (kalijerry:
+  dynamic descriptors from eight sharded pools). Upstream's main is merged up to 85d5641.
 - **The caption's performance figures**, and stopwatches of the texture side of the pass over the
   view heap (diagnostics).
 
