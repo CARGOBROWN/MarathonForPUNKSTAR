@@ -67,8 +67,8 @@ You need Windows 10/11 x64, a CPU with AVX2, a Direct3D 12 GPU with shader model
 shaders, Rust (the toolchain is pinned), the MSVC build tools, and your own dump of the title.
 
 ```powershell
-git clone https://github.com/iLucasRT/VInAMD
-cd VInAMD
+git clone https://github.com/CARGOBROWN/MarathonForPUNKSTAR
+cd MarathonForPUNKSTAR
 copy victory.example.toml victory.toml      # then set your paths, outside this folder
 cargo build --locked --profile diag -p victory --features diagnostics
 target\diag\victory.exe shaders             # every shader translated ahead, a few minutes
