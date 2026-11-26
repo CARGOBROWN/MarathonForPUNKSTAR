@@ -1799,9 +1799,13 @@ fn staging(resource: This, copy: &crate::resource::HostTexture, first: u32) -> O
             Some(&mut total),
         );
     }
-    let (piece, buffer, base, data) = match crate::pool::staging(host, total) {
+    let pooled = crate::draw::TexPart::new(4);
+    let pool = crate::pool::staging(host, total);
+    drop(pooled);
+    let (piece, buffer, base, data) = match pool {
         Some((piece, buffer, base, data)) => (Some(piece), buffer, base, data),
         None => {
+            let _made = crate::draw::TexPart::new(5);
             let (buffer, data) = host.upload_buffer(total)?;
             crate::host::name(&buffer, || {
                 format!(

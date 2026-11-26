@@ -2308,7 +2308,9 @@ impl State {
                 let address = u64::from(desc[10]) | u64::from(desc[11]) << 32;
                 let first = crate::resource::first_mip(&desc);
                 let len = crate::resource::placed_bytes_from(&resource, first).unwrap_or(1);
+                let part = TexPart::new(0);
                 let mapped = crate::texture::mapped_bytes(address as *const u8, len as usize);
+                drop(part);
                 if mapped == 0 {
                     HEAP_TEXTURES_AWAY.fetch_add(1, Ordering::Relaxed);
                     // Streamed out: what the slot showed is let go.
@@ -2393,9 +2395,11 @@ impl State {
                 && !baking
                 && crate::descriptor::host::show_after()
                 && heap.handle(index).is_some_and(|handle| !host.texture_slot_made_from(index, handle));
+            let part = TexPart::new(1);
             let view = heap.handle(index).and_then(|handle| {
                 if shows_other || late { crate::descriptor::view(handle) } else { host.mirror(index, handle, true) }
             });
+            drop(part);
             let at_once = || {
                 if late && let Some(handle) = heap.handle(index) {
                     let _ = host.mirror(index, handle, true);
@@ -2427,7 +2431,9 @@ impl State {
                 (Some(_), Some(View::Placed(_, _, desc))) => crate::resource::first_mip(desc),
                 _ => 0,
             };
+            let part = TexPart::new(2);
             let same = !tabled && crate::texture::unchanged(resource, first);
+            drop(part);
             if same {
                 HEAP_TEXTURES_SAME.fetch_add(1, Ordering::Relaxed);
                 if shows_other && let Some(handle) = heap.handle(index) {
@@ -2476,6 +2482,7 @@ impl State {
                 // (What was found mapped of it a moment ago is not asked
                 // again, unless the host copy may need more.)
                 crate::texture::PICKING.set(Some(there.filter(|_| partly.is_none()).unwrap_or(u64::MAX)));
+                let _part = TexPart::new(3);
                 readable(list, sampled.kind, view);
                 crate::texture::PICKING.set(None);
             }
@@ -4116,6 +4123,30 @@ impl RecordHash {
         let words = u64::from(a) << 32 | u64::from(b);
         let first = fold(self.0 ^ words ^ 0x2d35_8dcc_aa6c_78a5, 0x8bb8_4b93_962e_acc9 ^ u64::from(c));
         self.0 = fold(first ^ 0x4b33_a62e_d433_d4a3, 0x4d5a_2da5_1de1_aa47 ^ self.0.rotate_left(23)) ^ first;
+    }
+}
+
+/// Since the last frame line, microseconds (even places) and times (odd
+/// ones) of parts of the texture side of the heap pass: 0 how much of a
+/// texture's memory is mapped, 1 its slot's view made, 2 whether it is as it
+/// was, 3 its upload recorded (host texture, staging, detile); and, wherever
+/// asked: 4 staging from the pool, 5 staging buffers made anew. (Diagnostics
+/// of iLucasRT/VInAMD's texture pass, to find the open world's dips.)
+pub(crate) static TEX_PARTS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
+
+/// Adds the time it lives to a part of [`TEX_PARTS`].
+pub(crate) struct TexPart(usize, std::time::Instant);
+
+impl TexPart {
+    pub(crate) fn new(part: usize) -> Self {
+        Self(part, std::time::Instant::now())
+    }
+}
+
+impl Drop for TexPart {
+    fn drop(&mut self) {
+        TEX_PARTS[2 * self.0].fetch_add(self.1.elapsed().as_micros() as u64, Ordering::Relaxed);
+        TEX_PARTS[2 * self.0 + 1].fetch_add(1, Ordering::Relaxed);
     }
 }
 

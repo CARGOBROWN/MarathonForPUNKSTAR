@@ -7415,6 +7415,14 @@ fn split_line(frames: f64) {
         h[2],
         aside::WAITED.swap(0, Ordering::Relaxed) as f64 / 1e3 / frames,
     );
+    let t: Vec<f64> = crate::draw::TEX_PARTS.iter().map(|p| p.swap(0, Ordering::Relaxed) as f64 / frames).collect();
+    if t.iter().any(|&x| x > 0.0) {
+        tracing::info!(
+            "texture pass parts per frame: how much is mapped {:.1} ms in {:.0}; slot's view made {:.1} ms in {:.0}; as it was {:.1} ms in {:.0}; \
+             upload recorded {:.1} ms in {:.0}; of these and elsewhere: staging from the pool {:.1} ms in {:.0}, staging buffers made anew {:.1} ms in {:.0}",
+            t[0] / 1e3, t[1], t[2] / 1e3, t[3], t[4] / 1e3, t[5], t[6] / 1e3, t[7], t[8] / 1e3, t[9], t[10] / 1e3, t[11]
+        );
+    }
 }
 
 /// Whether a submission's refreshes of host copies run on several threads,
